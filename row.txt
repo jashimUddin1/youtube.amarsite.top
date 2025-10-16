@@ -1,0 +1,551 @@
+# YouTube Clone — Minimal MVP (HTML + Bootstrap + PHP + MySQL)
+
+এটা একটা ন্যূনতম কিন্তু চালু করা যায় এমন YouTube‑স্টাইল ভিডিও‑শেয়ারিং অ্যাপ। নিচের কোডগুলো কপি করে ফোল্ডার স্ট্রাকচার অনুযায়ী রাখলেই লোকালি রান করবে।
+
+> **ফিচার**: ইউজার সাইন‑আপ/লগইন, ভিডিও আপলোড, হোম ফিড, ভিডিও প্লে পেজ, সার্চ, কমেন্ট, ভিউ কাউন্ট, লাইক।
+
+---
+
+## 1) ফোল্ডার স্ট্রাকচার
+
+```
+youtube-clone/
+├─ config.php
+├─ db.php
+├─ schema.sql
+├─ index.php
+├─ watch.php
+├─ search.php
+├─ upload.php
+├─ like.php
+├─ login.php
+├─ register.php
+├─ logout.php
+├─ partials/
+│  ├─ header.php
+│  └─ footer.php
+├─ assets/
+│  ├─ css/custom.css
+│  └─ img/placeholder.jpg
+└─ uploads/
+   ├─ videos/  (writable)
+   └─ thumbs/  (writable; ম্যানুয়াল থাম্ব বা প্লেসহোল্ডার)
+```
+
+> **নোট**: `uploads/videos` এবং `uploads/thumbs` ফোল্ডারকে সার্ভারে write permission দিন (উদা. `chmod 755` বা `775`).
+
+---
+
+## 2) Database Schema (`schema.sql`)
+
+```sql
+CREATE DATABASE IF NOT EXISTS youtube_clone CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE youtube_clone;
+
+CREATE TABLE IF NOT EXISTS users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(80) NOT NULL,
+  email VARCHAR(120) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS videos (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  description TEXT,
+  filename VARCHAR(255) NOT NULL,
+  thumb VARCHAR(255),
+  views INT DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX(title)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS comments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  video_id INT NOT NULL,
+  user_id INT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS likes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  video_id INT NOT NULL,
+  user_id INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_like (video_id, user_id),
+  FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+```
+
+---
+
+## 3) কনফিগ ও ডাটাবেস কানেকশন
+
+### `config.php`
+
+```php
+<?php
+// Basic app config
+$BASE_URL = rtrim((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . dirname($_SERVER['SCRIPT_NAME']), '/\\');
+
+// DB config
+define('DB_HOST', '127.0.0.1');
+define('DB_NAME', 'youtube_clone');
+define('DB_USER', 'root');
+define('DB_PASS', '');
+
+// Upload config
+define('VIDEO_DIR', __DIR__ . '/uploads/videos/');
+define('THUMB_DIR', __DIR__ . '/uploads/thumbs/');
+$ALLOWED_VIDEO_EXT = ['mp4','webm','ogg'];
+$MAX_VIDEO_MB = 200; // প্রয়োজনে কম/বেশি
+
+// Session
+session_start();
+
+// CSRF helper
+if (empty($_SESSION['csrf'])) {
+  $_SESSION['csrf'] = bin2hex(random_bytes(16));
+}
+function csrf_field() { echo '<input type="hidden" name="csrf" value="' . htmlspecialchars($_SESSION['csrf']) . '">'; }
+function check_csrf() { if (!isset($_POST['csrf']) || !hash_equals($_SESSION['csrf'], $_POST['csrf'])) { http_response_code(403); exit('Invalid CSRF'); } }
+
+function is_logged_in() { return !empty($_SESSION['user']); }
+function require_login() { if (!is_logged_in()) { header('Location: login.php'); exit; }}
+?>
+```
+
+### `db.php`
+
+```php
+<?php
+require_once __DIR__ . '/config.php';
+try {
+  $pdo = new PDO('mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4', DB_USER, DB_PASS, [
+    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+  ]);
+} catch (PDOException $e) {
+  die('DB connection failed: ' . $e->getMessage());
+}
+?>
+```
+
+---
+
+## 4) শেয়ার্ড লেআউট (Bootstrap)
+
+### `partials/header.php`
+
+```php
+<?php require_once __DIR__ . '/../config.php'; ?>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTube Clone</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="/assets/css/custom.css" rel="stylesheet">
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+  <div class="container">
+    <a class="navbar-brand" href="index.php">YT‑Clone</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav" aria-controls="nav" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="nav">
+      <form class="d-flex ms-auto" role="search" action="search.php">
+        <input class="form-control me-2" type="search" name="q" placeholder="Search" aria-label="Search">
+        <button class="btn btn-outline-light" type="submit">Search</button>
+      </form>
+      <ul class="navbar-nav ms-3">
+        <?php if (is_logged_in()): ?>
+          <li class="nav-item"><a class="nav-link" href="upload.php">Upload</a></li>
+          <li class="nav-item"><span class="nav-link">👋 <?php echo htmlspecialchars($_SESSION['user']['name']); ?></span></li>
+          <li class="nav-item"><a class="nav-link" href="logout.php">Logout</a></li>
+        <?php else: ?>
+          <li class="nav-item"><a class="nav-link" href="login.php">Login</a></li>
+          <li class="nav-item"><a class="nav-link" href="register.php">Register</a></li>
+        <?php endif; ?>
+      </ul>
+    </div>
+  </div>
+</nav>
+<div class="container py-4">
+```
+
+### `partials/footer.php`
+
+```php
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+```
+
+---
+
+## 5) Authentication
+
+### `register.php`
+
+```php
+<?php
+require_once __DIR__ . '/db.php';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+  check_csrf();
+  $name = trim($_POST['name'] ?? '');
+  $email = trim($_POST['email'] ?? '');
+  $pass = $_POST['password'] ?? '';
+  if ($name && filter_var($email, FILTER_VALIDATE_EMAIL) && strlen($pass) >= 6) {
+    $hash = password_hash($pass, PASSWORD_BCRYPT);
+    $stmt = $pdo->prepare('INSERT INTO users (name,email,password_hash) VALUES (?,?,?)');
+    try {
+      $stmt->execute([$name,$email,$hash]);
+      header('Location: login.php?registered=1'); exit;
+    } catch (PDOException $e) {
+      $err = 'Email already in use.';
+    }
+  } else { $err = 'Provide valid name, email, password (6+).'; }
+}
+include __DIR__ . '/partials/header.php';
+?>
+<h3>Register</h3>
+<?php if (!empty($err)): ?><div class="alert alert-danger"><?= htmlspecialchars($err) ?></div><?php endif; ?>
+<form method="post" class="col-md-6">
+  <?php csrf_field(); ?>
+  <div class="mb-3"><label class="form-label">Name</label><input name="name" class="form-control" required></div>
+  <div class="mb-3"><label class="form-label">Email</label><input type="email" name="email" class="form-control" required></div>
+  <div class="mb-3"><label class="form-label">Password</label><input type="password" name="password" class="form-control" required></div>
+  <button class="btn btn-primary">Create Account</button>
+</form>
+<?php include __DIR__ . '/partials/footer.php'; ?>
+```
+
+### `login.php`
+
+```php
+<?php
+require_once __DIR__ . '/db.php';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+  check_csrf();
+  $email = trim($_POST['email'] ?? '');
+  $pass = $_POST['password'] ?? '';
+  $stmt = $pdo->prepare('SELECT * FROM users WHERE email=? LIMIT 1');
+  $stmt->execute([$email]);
+  $u = $stmt->fetch();
+  if ($u && password_verify($pass, $u['password_hash'])) {
+    $_SESSION['user'] = ['id'=>$u['id'],'name'=>$u['name'],'email'=>$u['email']];
+    header('Location: index.php'); exit;
+  } else { $err = 'Invalid credentials'; }
+}
+include __DIR__ . '/partials/header.php';
+?>
+<h3>Login</h3>
+<?php if (!empty($_GET['registered'])): ?><div class="alert alert-success">Registration successful. Please login.</div><?php endif; ?>
+<?php if (!empty($err)): ?><div class="alert alert-danger"><?= htmlspecialchars($err) ?></div><?php endif; ?>
+<form method="post" class="col-md-6">
+  <?php csrf_field(); ?>
+  <div class="mb-3"><label class="form-label">Email</label><input type="email" name="email" class="form-control" required></div>
+  <div class="mb-3"><label class="form-label">Password</label><input type="password" name="password" class="form-control" required></div>
+  <button class="btn btn-primary">Login</button>
+</form>
+<?php include __DIR__ . '/partials/footer.php'; ?>
+```
+
+### `logout.php`
+
+```php
+<?php
+require_once __DIR__ . '/config.php';
+session_destroy();
+header('Location: index.php');
+```
+
+---
+
+## 6) ভিডিও আপলোড
+
+### `upload.php`
+
+```php
+<?php
+require_once __DIR__ . '/db.php';
+require_login();
+$err = $ok = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+  check_csrf();
+  $title = trim($_POST['title'] ?? '');
+  $desc  = trim($_POST['description'] ?? '');
+  $thumbFile = $_FILES['thumb'] ?? null;
+  $file = $_FILES['video'] ?? null;
+
+  if (!$title || !$file || $file['error'] !== UPLOAD_ERR_OK) {
+    $err = 'Title এবং Video ফাইল দিন।';
+  } else {
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    if (!in_array($ext, $ALLOWED_VIDEO_EXT, true)) {
+      $err = 'Allowed: mp4, webm, ogg';
+    } elseif (($file['size'] ?? 0) > ($MAX_VIDEO_MB * 1024 * 1024)) {
+      $err = 'Max size ' . $MAX_VIDEO_MB . 'MB';
+    } else {
+      $safe = bin2hex(random_bytes(8)) . '.' . $ext;
+      $dest = VIDEO_DIR . $safe;
+      if (!is_dir(VIDEO_DIR)) mkdir(VIDEO_DIR, 0775, true);
+      if (!move_uploaded_file($file['tmp_name'], $dest)) {
+        $err = 'Upload failed';
+      } else {
+        // Thumb (optional)
+        $thumbName = null;
+        if ($thumbFile && $thumbFile['error'] === UPLOAD_ERR_OK) {
+          $tExt = strtolower(pathinfo($thumbFile['name'], PATHINFO_EXTENSION));
+          if (!in_array($tExt, ['jpg','jpeg','png'], true)) {
+            $thumbName = null; // ignore invalid thumb
+          } else {
+            $thumbName = bin2hex(random_bytes(8)) . '.' . $tExt;
+            if (!is_dir(THUMB_DIR)) mkdir(THUMB_DIR, 0775, true);
+            move_uploaded_file($thumbFile['tmp_name'], THUMB_DIR . $thumbName);
+          }
+        }
+        $stmt = $pdo->prepare('INSERT INTO videos (user_id,title,description,filename,thumb) VALUES (?,?,?,?,?)');
+        $stmt->execute([$_SESSION['user']['id'],$title,$desc,$safe,$thumbName]);
+        $ok = 'Video uploaded!';
+      }
+    }
+  }
+}
+include __DIR__ . '/partials/header.php';
+?>
+<h3>Upload Video</h3>
+<?php if ($err): ?><div class="alert alert-danger"><?= htmlspecialchars($err) ?></div><?php endif; ?>
+<?php if ($ok): ?><div class="alert alert-success"><?= htmlspecialchars($ok) ?></div><?php endif; ?>
+<form method="post" enctype="multipart/form-data" class="col-md-8">
+  <?php csrf_field(); ?>
+  <div class="mb-3"><label class="form-label">Title</label><input name="title" class="form-control" required></div>
+  <div class="mb-3"><label class="form-label">Description</label><textarea name="description" class="form-control" rows="4"></textarea></div>
+  <div class="mb-3"><label class="form-label">Video (mp4/webm/ogg)</label><input type="file" name="video" accept="video/mp4,video/webm,video/ogg" class="form-control" required></div>
+  <div class="mb-3"><label class="form-label">Thumbnail (jpg/png, optional)</label><input type="file" name="thumb" accept="image/*" class="form-control"></div>
+  <button class="btn btn-primary">Upload</button>
+</form>
+<?php include __DIR__ . '/partials/footer.php'; ?>
+```
+
+---
+
+## 7) হোম ফিড (সর্বশেষ ভিডিও)
+
+### `index.php`
+
+```php
+<?php
+require_once __DIR__ . '/db.php';
+$stmt = $pdo->query('SELECT v.*, u.name AS author FROM videos v JOIN users u ON v.user_id=u.id ORDER BY v.created_at DESC LIMIT 24');
+$videos = $stmt->fetchAll();
+include __DIR__ . '/partials/header.php';
+?>
+<h3 class="mb-3">Latest Videos</h3>
+<div class="row g-3">
+<?php foreach ($videos as $v): ?>
+  <div class="col-6 col-md-4 col-lg-3">
+    <div class="card h-100">
+      <a href="watch.php?v=<?= $v['id'] ?>" class="text-decoration-none">
+        <img class="card-img-top" src="<?= $v['thumb'] ? 'uploads/thumbs/' . htmlspecialchars($v['thumb']) : 'assets/img/placeholder.jpg' ?>" alt="thumb">
+        <div class="card-body">
+          <h6 class="card-title text-dark text-truncate" title="<?= htmlspecialchars($v['title']) ?>"><?= htmlspecialchars($v['title']) ?></h6>
+          <div class="small text-muted">By <?= htmlspecialchars($v['author']) ?> • <?= (int)$v['views'] ?> views</div>
+        </div>
+      </a>
+    </div>
+  </div>
+<?php endforeach; ?>
+</div>
+<?php include __DIR__ . '/partials/footer.php'; ?>
+```
+
+---
+
+## 8) ভিডিও দেখার পেজ + কমেন্ট + লাইক
+
+### `watch.php`
+
+```php
+<?php
+require_once __DIR__ . '/db.php';
+$id = (int)($_GET['v'] ?? 0);
+$stmt = $pdo->prepare('SELECT v.*, u.name AS author FROM videos v JOIN users u ON v.user_id=u.id WHERE v.id=?');
+$stmt->execute([$id]);
+$video = $stmt->fetch();
+if (!$video) { http_response_code(404); die('Video not found'); }
+
+// increment views
+$pdo->prepare('UPDATE videos SET views=views+1 WHERE id=?')->execute([$id]);
+
+// handle comment submit
+if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['comment'])) {
+  check_csrf();
+  if (!is_logged_in()) { header('Location: login.php'); exit; }
+  $body = trim($_POST['comment']);
+  if ($body) {
+    $pdo->prepare('INSERT INTO comments (video_id,user_id,body) VALUES (?,?,?)')->execute([$id, $_SESSION['user']['id'], $body]);
+    header('Location: watch.php?v=' . $id); exit;
+  }
+}
+
+$comments = $pdo->prepare('SELECT c.*, u.name FROM comments c JOIN users u ON c.user_id=u.id WHERE c.video_id=? ORDER BY c.created_at DESC');
+$comments->execute([$id]);
+$comments = $comments->fetchAll();
+
+$likesCount = $pdo->prepare('SELECT COUNT(*) AS n FROM likes WHERE video_id=?');
+$likesCount->execute([$id]);
+$likes = (int)$likesCount->fetch()['n'];
+
+$liked = false;
+if (is_logged_in()) {
+  $chk = $pdo->prepare('SELECT 1 FROM likes WHERE video_id=? AND user_id=?');
+  $chk->execute([$id, $_SESSION['user']['id']]);
+  $liked = (bool)$chk->fetch();
+}
+include __DIR__ . '/partials/header.php';
+?>
+<div class="row">
+  <div class="col-lg-8">
+    <video controls class="w-100 mb-2" src="uploads/videos/<?= htmlspecialchars($video['filename']) ?>"></video>
+    <h4><?= htmlspecialchars($video['title']) ?></h4>
+    <div class="text-muted mb-2">By <?= htmlspecialchars($video['author']) ?> • <?= (int)$video['views']+1 ?> views • <?= htmlspecialchars($video['created_at']) ?></div>
+    <form action="like.php" method="post" class="mb-3 d-inline">
+      <?php csrf_field(); ?>
+      <input type="hidden" name="video_id" value="<?= $id ?>">
+      <button class="btn btn-sm <?= $liked ? 'btn-success' : 'btn-outline-success' ?>">👍 Like (<?= $likes ?>)</button>
+    </form>
+    <p><?= nl2br(htmlspecialchars($video['description'] ?? '')) ?></p>
+
+    <hr>
+    <h5>Comments</h5>
+    <?php if (is_logged_in()): ?>
+      <form method="post" class="mb-3">
+        <?php csrf_field(); ?>
+        <textarea name="comment" class="form-control" rows="3" placeholder="Add a comment..." required></textarea>
+        <button class="btn btn-primary mt-2">Post</button>
+      </form>
+    <?php else: ?>
+      <div class="alert alert-info">Login করে কমেন্ট করুন।</div>
+    <?php endif; ?>
+
+    <?php foreach ($comments as $c): ?>
+      <div class="mb-3">
+        <strong><?= htmlspecialchars($c['name']) ?></strong>
+        <div class="small text-muted"><?= htmlspecialchars($c['created_at']) ?></div>
+        <div><?= nl2br(htmlspecialchars($c['body'])) ?></div>
+      </div>
+    <?php endforeach; ?>
+  </div>
+</div>
+<?php include __DIR__ . '/partials/footer.php'; ?>
+```
+
+### `like.php`
+
+```php
+<?php
+require_once __DIR__ . '/db.php';
+require_login();
+if ($_SERVER['REQUEST_METHOD']==='POST') {
+  check_csrf();
+  $vid = (int)($_POST['video_id'] ?? 0);
+  // toggle like
+  $stmt = $pdo->prepare('SELECT id FROM likes WHERE video_id=? AND user_id=?');
+  $stmt->execute([$vid, $_SESSION['user']['id']]);
+  if ($row = $stmt->fetch()) {
+    $pdo->prepare('DELETE FROM likes WHERE id=?')->execute([$row['id']]);
+  } else {
+    $pdo->prepare('INSERT INTO likes (video_id,user_id) VALUES (?,?)')->execute([$vid, $_SESSION['user']['id']]);
+  }
+}
+header('Location: watch.php?v=' . $vid);
+```
+
+---
+
+## 9) সার্চ
+
+### `search.php`
+
+```php
+<?php
+require_once __DIR__ . '/db.php';
+$q = trim($_GET['q'] ?? '');
+$videos = [];
+if ($q !== '') {
+  $stmt = $pdo->prepare("SELECT v.*, u.name AS author FROM videos v JOIN users u ON v.user_id=u.id WHERE v.title LIKE ? ORDER BY v.created_at DESC");
+  $stmt->execute(['%' . $q . '%']);
+  $videos = $stmt->fetchAll();
+}
+include __DIR__ . '/partials/header.php';
+?>
+<h3>Search: <?= htmlspecialchars($q) ?></h3>
+<div class="row g-3">
+<?php foreach ($videos as $v): ?>
+  <div class="col-6 col-md-4 col-lg-3">
+    <div class="card h-100">
+      <a href="watch.php?v=<?= $v['id'] ?>" class="text-decoration-none">
+        <img class="card-img-top" src="<?= $v['thumb'] ? 'uploads/thumbs/' . htmlspecialchars($v['thumb']) : 'assets/img/placeholder.jpg' ?>" alt="thumb">
+        <div class="card-body">
+          <h6 class="card-title text-dark text-truncate" title="<?= htmlspecialchars($v['title']) ?>"><?= htmlspecialchars($v['title']) ?></h6>
+          <div class="small text-muted">By <?= htmlspecialchars($v['author']) ?> • <?= (int)$v['views'] ?> views</div>
+        </div>
+      </a>
+    </div>
+  </div>
+<?php endforeach; ?>
+<?php if ($q && !$videos): ?>
+  <div class="col-12"><div class="alert alert-warning">No results.</div></div>
+<?php endif; ?>
+</div>
+<?php include __DIR__ . '/partials/footer.php'; ?>
+```
+
+---
+
+## 10) স্টাইলস
+
+### `assets/css/custom.css`
+
+```css
+.card-title { line-height: 1.2; height: 2.4em; overflow: hidden; }
+video { background: #000; border-radius: 8px; }
+```
+
+### `assets/img/placeholder.jpg`
+
+একটা 16:9 প্লেসহোল্ডার ইমেজ ব্যবহার করুন (উদা. কালো ব্যাকগ্রাউন্ডে "No Thumbnail").
+
+---
+
+## 11) রান করার ধাপ
+
+1. `schema.sql` ইমপোর্ট করুন (phpMyAdmin বা CLI)।
+2. `config.php`‑তে DB ইউজার/পাস দিন।
+3. Apache/PHP সার্ভারে প্রজেক্ট রাখুন (উদা. XAMPP/MAMP/Laragon)।
+4. `uploads/videos` ও `uploads/thumbs` রাইটেবল করুন।
+5. ব্রাউজ করুন: `http://localhost/youtube-clone/` → Register → Login → Upload.
+
+---
+
+## 12) নোট / বেস্ট প্র্যাকটিস
+
+* **Security**: ফাইল টাইপ ভ্যালিডেশন, সাইজ লিমিট, CSRF, password_hash ব্যবহার করা হয়েছে। প্রোডাকশনে আরও হার্ডেনিং (MIME check, rate‑limit, CSP) যোগ করুন।
+* **Thumbnails**: এখানে ম্যানুয়াল থাম্ব সাপোর্ট আছে; চাইলে ffmpeg দিয়ে অটো থাম্ব জেনারেট করতে পারেন (CLI/queue দরকার হবে)।
+* **Streaming**: বড় ফাইলের জন্য Nginx/Apache range requests ঠিক আছে; ভিডিও `uploads/videos` থেকে সরাসরি সার্ভ হয়।
+* **Pagination**: হোম/সার্চে পেজিনেশন পরে যুক্ত করুন।
+* **Profiles/Subscriptions**: পরবর্তী ধাপে user channel page, subscribe/follow, views analytics যোগ করতে পারেন।
+
+> এই স্টার্টার‑কিটটা কপি‑পেস্ট করলেই চলবে। কোন অংশে কাস্টমাইজ লাগলে জানাবেন, আমি আপডেট করে দেব।
