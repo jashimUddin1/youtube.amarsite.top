@@ -22,19 +22,17 @@ function to_bytes($val) {
 
 // PRG success message
 if (($_GET['ok'] ?? '') === '1') {
-  $ok = 'Video uploaded!';
+  $ok = '✅ Video uploaded successfully!';
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-  // Oversize POST guard BEFORE CSRF (fixes "invalid csrf" when post_max_size is exceeded)
   $postMaxBytes = to_bytes(ini_get('post_max_size'));
   $contentLen   = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
   if ($postMaxBytes > 0 && $contentLen > $postMaxBytes) {
-    $err = 'Payload too large: রিকোয়েস্ট সাইজ post_max_size ছাড়িয়েছে। '
-         . 'দয়া করে ছোট ফাইল দিন বা সার্ভার কনফিগ বাড়ান (post_max_size, upload_max_filesize, client_max_body_size).';
+    $err = 'Payload too large: রিকোয়েস্ট সাইজ post_max_size ছাড়িয়েছে।';
   } else {
     try {
-      check_csrf(); // now safe to verify CSRF
+      check_csrf();
     } catch (Throwable $e) {
       $err = 'CSRF validation failed.';
     }
@@ -46,47 +44,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $thumbFile = $_FILES['thumb'] ?? null;
     $file      = $_FILES['video'] ?? null;
 
-    // Basic validation
     if ($title === '') {
       $err = 'Title দিন।';
     } elseif (!$file || !isset($file['error'])) {
       $err = 'Video ফাইল দিন।';
     } else {
-      // File error mapping
       switch ($file['error']) {
-        case UPLOAD_ERR_OK:
-          break;
+        case UPLOAD_ERR_OK: break;
         case UPLOAD_ERR_INI_SIZE:
         case UPLOAD_ERR_FORM_SIZE:
-          $err = 'Video ফাইলটি সর্বোচ্চ সাইজ ছাড়িয়েছে (server/client limit)।';
-          break;
+          $err = 'Video ফাইলটি সর্বোচ্চ সাইজ ছাড়িয়েছে।'; break;
         case UPLOAD_ERR_PARTIAL:
-          $err = 'Video আংশিক আপলোড হয়েছে, আবার চেষ্টা করুন।';
-          break;
+          $err = 'Video আংশিক আপলোড হয়েছে, আবার চেষ্টা করুন।'; break;
         case UPLOAD_ERR_NO_FILE:
-          $err = 'কোনো Video ফাইল পাওয়া যায়নি।';
-          break;
-        case UPLOAD_ERR_NO_TMP_DIR:
-          $err = 'সার্ভারের অস্থায়ী ডিরেক্টরি (upload_tmp_dir) নেই।';
-          break;
-        case UPLOAD_ERR_CANT_WRITE:
-          $err = 'ডিস্কে লিখতে ব্যর্থ।';
-          break;
-        case UPLOAD_ERR_EXTENSION:
-          $err = 'এক্সটেনশনের কারণে আপলোড বন্ধ হয়েছে।';
-          break;
+          $err = 'কোনো Video ফাইল পাওয়া যায়নি।'; break;
         default:
           $err = 'Upload error code: ' . (int)$file['error'];
       }
     }
 
-    // Extension & size checks
     if ($err === '') {
       $ext = strtolower(pathinfo($file['name'] ?? '', PATHINFO_EXTENSION));
       if (!in_array($ext, $ALLOWED_VIDEO_EXT, true)) {
         $err = 'Allowed: mp4, webm, ogg';
       } else {
-        // Max size from app config (set to 1024 for 1GB)
         $maxBytes = (int)$MAX_VIDEO_MB * 1024 * 1024;
         if (($file['size'] ?? 0) > $maxBytes) {
           $err = 'Max size ' . (int)$MAX_VIDEO_MB . 'MB';
@@ -94,13 +75,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       }
     }
 
-    // Move & DB insert
     if ($err === '') {
-      // Ensure dirs exist
       if (!is_dir(VIDEO_DIR)) @mkdir(VIDEO_DIR, 0775, true);
       if (!is_dir(THUMB_DIR)) @mkdir(THUMB_DIR, 0775, true);
 
-      // Safe random filename
       try {
         $safeVideo = bin2hex(random_bytes(8)) . '.' . $ext;
       } catch (Throwable $e) {
@@ -113,59 +91,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       } elseif (!@move_uploaded_file($file['tmp_name'], $videoDest)) {
         $err = 'Video upload failed.';
       } else {
-        // Optional thumbnail
         $thumbName = null;
-        if ($thumbFile && isset($thumbFile['error']) && $thumbFile['error'] !== UPLOAD_ERR_NO_FILE) {
-          if ($thumbFile['error'] === UPLOAD_ERR_OK) {
-            $tExt = strtolower(pathinfo($thumbFile['name'] ?? '', PATHINFO_EXTENSION));
-            if (in_array($tExt, ['jpg','jpeg','png'], true)) {
-              try {
-                $thumbName = bin2hex(random_bytes(8)) . '.' . $tExt;
-              } catch (Throwable $e) {
-                $thumbName = uniqid('th_', true) . '.' . $tExt;
-              }
-              $thumbDest = rtrim(THUMB_DIR, '/\\') . DIRECTORY_SEPARATOR . $thumbName;
-
-              if (!is_uploaded_file($thumbFile['tmp_name'])) {
-                $err = 'Invalid thumbnail upload.';
-                @unlink($videoDest);
-              } elseif (!@move_uploaded_file($thumbFile['tmp_name'], $thumbDest)) {
-                $err = 'Thumbnail upload failed.';
-                @unlink($videoDest);
-              }
-            }
-            // Unsupported thumb ext → silently ignore
-          } else {
-            $err = 'Thumbnail upload error (code ' . (int)$thumbFile['error'] . ').';
-            @unlink($videoDest);
+        if ($thumbFile && $thumbFile['error'] === UPLOAD_ERR_OK) {
+          $tExt = strtolower(pathinfo($thumbFile['name'] ?? '', PATHINFO_EXTENSION));
+          if (in_array($tExt, ['jpg', 'jpeg', 'png'], true)) {
+            $thumbName = bin2hex(random_bytes(8)) . '.' . $tExt;
+            $thumbDest = rtrim(THUMB_DIR, '/\\') . DIRECTORY_SEPARATOR . $thumbName;
+            move_uploaded_file($thumbFile['tmp_name'], $thumbDest);
           }
         }
 
-        // DB insert
-        if ($err === '') {
-          try {
-            $stmt = $pdo->prepare(
-              'INSERT INTO videos (user_id, title, description, filename, thumb)
-               VALUES (?, ?, ?, ?, ?)'
-            );
-            $stmt->execute([
-              $_SESSION['user']['id'] ?? null,
-              $title,
-              $desc,
-              $safeVideo,
-              $thumbName
-            ]);
+        try {
+          $stmt = $pdo->prepare(
+            'INSERT INTO videos (user_id, title, description, filename, thumb)
+             VALUES (?, ?, ?, ?, ?)'
+          );
+          $stmt->execute([
+            $_SESSION['user']['id'] ?? null,
+            $title,
+            $desc,
+            $safeVideo,
+            $thumbName
+          ]);
 
-            // Success → PRG
-            header('Location: ' . basename(__FILE__) . '?ok=1');
-            exit;
-          } catch (Throwable $e) {
-            @unlink($videoDest);
-            if ($thumbName) {
-              @unlink(rtrim(THUMB_DIR, '/\\') . DIRECTORY_SEPARATOR . $thumbName);
-            }
-            $err = 'Database error: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
-          }
+          header('Location: ' . basename(__FILE__) . '?ok=1');
+          exit;
+        } catch (Throwable $e) {
+          @unlink($videoDest);
+          if ($thumbName) @unlink(THUMB_DIR . '/' . $thumbName);
+          $err = 'Database error: ' . htmlspecialchars($e->getMessage());
         }
       }
     }
@@ -177,28 +131,26 @@ include __DIR__ . '/partials/header.php';
 <h3>Upload Video</h3>
 
 <?php if ($err): ?>
-  <div class="alert alert-danger"><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></div>
+  <div class="alert alert-danger"><?= htmlspecialchars($err) ?></div>
 <?php endif; ?>
 
 <?php if ($ok): ?>
-  <div class="alert alert-success"><?= htmlspecialchars($ok, ENT_QUOTES, 'UTF-8') ?></div>
+  <div class="alert alert-success"><?= htmlspecialchars($ok) ?></div>
 <?php endif; ?>
 
-<form method="post" enctype="multipart/form-data" class="col-md-8" novalidate>
+<form id="uploadForm" method="post" enctype="multipart/form-data" class="col-md-8" novalidate>
   <?php csrf_field(); ?>
-
-  <!-- Client-side max hint (1GB in bytes) -->
   <input type="hidden" name="MAX_FILE_SIZE" value="1073741824">
 
   <div class="mb-3">
     <label class="form-label" for="title">Title</label>
     <input id="title" name="title" class="form-control" required
-           value="<?= htmlspecialchars($_POST['title'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
+           value="<?= htmlspecialchars($_POST['title'] ?? '') ?>">
   </div>
 
   <div class="mb-3">
     <label class="form-label" for="description">Description</label>
-    <textarea id="description" name="description" class="form-control" rows="4"><?= htmlspecialchars($_POST['description'] ?? '', ENT_QUOTES, 'UTF-8') ?></textarea>
+    <textarea id="description" name="description" class="form-control" rows="4"><?= htmlspecialchars($_POST['description'] ?? '') ?></textarea>
   </div>
 
   <div class="mb-3">
@@ -217,23 +169,54 @@ include __DIR__ . '/partials/header.php';
   </div>
 
   <button class="btn btn-primary">Upload</button>
+
+  <!-- Progress Bar -->
+  <div class="progress mt-3" style="height: 22px; display:none;" id="progressContainer">
+    <div class="progress-bar progress-bar-striped progress-bar-animated"
+         id="progressBar" role="progressbar" style="width:0%">0%</div>
+  </div>
 </form>
 
 <script>
-// Simple client-side size check (1GB)
-(function () {
-  const input = document.getElementById('video');
-  if (!input) return;
-  input.addEventListener('change', function (e) {
-    const f = e.target.files && e.target.files[0];
-    if (!f) return;
-    const MAX = 1024 * 1024 * 1024; // 1GB in bytes
-    if (f.size > MAX) {
-      alert('ফাইলটি 1GB সীমা ছাড়িয়েছে।');
-      e.target.value = '';
+// Show upload progress
+document.getElementById('uploadForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+
+  const form = e.target;
+  const data = new FormData(form);
+  const xhr = new XMLHttpRequest();
+
+  const progressContainer = document.getElementById('progressContainer');
+  const progressBar = document.getElementById('progressBar');
+  progressContainer.style.display = 'block';
+  progressBar.style.width = '0%';
+  progressBar.textContent = '0%';
+
+  xhr.upload.addEventListener('progress', function(e) {
+    if (e.lengthComputable) {
+      const percent = Math.round((e.loaded / e.total) * 100);
+      progressBar.style.width = percent + '%';
+      progressBar.textContent = percent + '%';
     }
   });
-})();
+
+  xhr.onreadystatechange = function() {
+    if (xhr.readyState === 4) {
+      if (xhr.status === 200) {
+        progressBar.classList.remove('progress-bar-animated');
+        progressBar.classList.add('bg-success');
+        progressBar.textContent = '✅ Upload Complete!';
+        setTimeout(() => window.location.href = 'upload.php?ok=1', 1200);
+      } else {
+        progressBar.classList.add('bg-danger');
+        progressBar.textContent = '❌ Upload Failed!';
+      }
+    }
+  };
+
+  xhr.open('POST', form.action);
+  xhr.send(data);
+});
 </script>
 
 <?php include __DIR__ . '/partials/footer.php'; ?>
